@@ -674,15 +674,459 @@ namespace rabbitMq.Consumer.Topic
 
 1、内存到磁盘。保证:消息确认签收之前，不能丢。
 
-2、要做到消息持久化，必须：交换机、队列、消息都要持久化。
+2、<font style="color:red;">要做到消息持久化，必须：交换机、队列、消息都要持久化。</font>
 
 3、持久化的交换机可以绑定没有持久化的队列；持久化的队列里可以放非持久化消息
+
+
 
 #### 7.2.非持久化概念
 
 能持久化，但是一般不做。内存快耗尽的时候进行持久化
 
+
+
 #### 7.3.交换机/队列持久化
+
+1. 交换机持久化
+
+   ```c#
+   //定义交换机 durable:true 持久化
+   channel.ExchangeDeclare("topicExchange", type: "topic", durable: true);
+   ```
+
+2. 队列持久化
+
+   ```c#
+   //定义队列 durable:true 持久化
+   channel.QueueDeclare("topicqueue1", durable: true, false, false, null);
+   channel.QueueDeclare("topicqueue2", durable: true, false, false, null);
+   ```
+
+3. 消息持久化
+
+   ```c#
+   var prop = channel.CreateBasicProperties();
+   prop.Persistent = true; //消息持久化
+   
+   int i = 0;
+   while (i < 10)
+   {
+       string content = $"这是第{i}条数据";
+       byte[] body = Encoding.UTF8.GetBytes(content);
+   
+       //发送消息，向路由key为Routingkey3的队列发消息 prop消息持久化
+       channel.BasicPublish(exchange: "topicExchange", routingKey: "Routingkey.abc", prop, body);
+   
+       Console.WriteLine($"第{i}条数据发送完毕");
+       i++;
+   }
+   ```
+
+生产者:
+
+```c#
+using rabbitMq.Common;
+using RabbitMQ.Client;
+using System.Text;
+
+namespace rabbitMq.Provider.Topic
+{
+    public class SendTopic
+    {
+        public static void SendMessage()
+        {
+            //创建连接
+            using (var connection = RabbitMqClient.GetConnection())
+            {
+                //创建信道
+                using (var channel = connection.CreateModel())
+                {
+                    //定义交换机
+                    channel.ExchangeDeclare("topicExchange", type: "topic", durable: true);
+
+                    //定义队列
+                    channel.QueueDeclare("topicqueue1", durable: true, false, false, null);
+                    channel.QueueDeclare("topicqueue2", durable: true, false, false, null);
+
+                    //将队列绑定到交换机上
+                    channel.QueueBind("topicqueue1", "topicExchange", "Routingkey.*");
+                    channel.QueueBind("topicqueue2", "topicExchange", "Routingkey.#");
+
+
+                    var prop = channel.CreateBasicProperties();
+                    prop.Persistent = true; //消息持久化
+                    int i = 0;
+                    while (i < 10)
+                    {
+                        string content = $"这是第{i}条数据";
+                        byte[] body = Encoding.UTF8.GetBytes(content);
+
+                        //发送消息，向路由key为Routingkey3的队列发消息
+                        channel.BasicPublish(exchange: "topicExchange", routingKey: "Routingkey.abc", prop, body);
+
+                        Console.WriteLine($"第{i}条数据发送完毕");
+                        i++;
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+
+
+### 8.死信队列
+
+> ​	无法消费的消息。一般来说，生产者将消息发送到队列中，消费者从队列中取出消息进行消费，但有时候由于特定原因，导致某些消息无法被消费，这些消息如果后续没有处理，就变成了死信，有死信自然就有了死信队列。
+
+```shell
+应用场景:为了保证订单业务的消息数据不丢失，需要使用到RabbitMQ的死信队列机制，当消息消费发生异常时，将消息投入死信队列中。还有比如说:用户在商城下单成功并点击去支付后在指定时间未支付时自动失效。
+```
+
+#### 8.1.来源
+
+1、消息TTL过期(Time To Live 存活时长)
+
+2、队列达到最大长度(队列满了，无法再添加数据到mq中)
+
+3、消息被拒绝(basic.reject或 basic.nack)并且requeue=false(不放回队列)
+
+#### 8.2.实现流程
+
+![image-20240628114551439](README.assets/image-20240628114551439.png)
+
+##### 8.2.1.消息TTL过期(Time To Live 存活时长)
+
+> ​	场景：30分钟订单未支付
+
+生产者：
+
+```c#
+using rabbitMq.Common;
+using RabbitMQ.Client;
+using System.Text;
+
+namespace rabbitMq.Provider.Dead
+{
+    public class SendDead
+    {
+        public static void SendMessage()
+        {
+            var connection = RabbitMqClient.GetConnection();
+            var channel = connection.CreateModel();
+
+            //正常交换机、正常队列、正常路由
+            string normalExchange = "normalExchange";
+            string normalQueue = "normalQueue";
+            string normalKey = "normalKey";
+            //死信交换机、死信队列、死信路由
+            string deadExchange = "deadExchange";
+            string deadQueue = "deadQueue";
+            string deadKey = "deadKey";
+
+            //声明正常
+            channel.ExchangeDeclare(normalExchange, type: "direct", durable: true);
+            Dictionary<string, object> arg = new Dictionary<string, object>();
+            arg.Add("x-dead-letter-exchange", deadExchange);//死信交换机
+            arg.Add("x-dead-letter-routing-key", deadKey);//死信路由
+            channel.QueueDeclare(normalQueue, durable: true, false, false, arg);
+            channel.QueueBind(normalQueue, normalExchange, normalKey);
+
+            //声明死信
+            channel.ExchangeDeclare(deadExchange, type: "direct", durable: true);
+            channel.QueueDeclare(deadQueue, durable: true, false, false, null);
+            channel.QueueBind(deadQueue, deadExchange, deadKey);
+
+            //向正常队列发送消息
+            var prop = channel.CreateBasicProperties();
+            prop.Expiration = "10000"; //过期事件 毫秒 10s过期
+            int i = 0;
+            while (i < 10)
+            {
+                string content = $"死信消息，第{i}条消息";
+                byte[] body = Encoding.UTF8.GetBytes(content);
+
+                channel.BasicPublish(normalExchange, normalKey, prop, body);
+
+                i++;
+            }
+        }
+    }
+}
+```
+
+消费者：
+
+正常队列消费：channel.BasicConsume(normalQueue, false, consumer);
+
+死信队列消费：channel.BasicConsume(deadQueue, false, consumer);
+
+```c#
+using rabbitMq.Common;
+using RabbitMQ.Client;
+using RabbitMQ.Client.Events;
+using System.Text;
+
+namespace rabbitMq.Consumer.Dead
+{
+    public class ReceiveDead
+    {
+        public static void ReceiveMessage()
+        {
+            var connection = RabbitMqClient.GetConnection();
+            var channel = connection.CreateModel();
+
+            //正常交换机、正常队列、正常路由
+            string normalExchange = "normalExchange";
+            string normalQueue = "normalQueue";
+            string normalKey = "normalKey";
+            //死信交换机、死信队列、死信路由
+            string deadExchange = "deadExchange";
+            string deadQueue = "deadQueue";
+            string deadKey = "deadKey";
+
+            //声明正常
+            channel.ExchangeDeclare(normalExchange, type: "direct", durable: true);
+            Dictionary<string, object> arg = new Dictionary<string, object>();
+            arg.Add("x-dead-letter-exchange", deadExchange);//死信交换机
+            arg.Add("x-dead-letter-routing-key", deadKey);//死信路由
+            channel.QueueDeclare(normalQueue, durable: true, false, false, arg);
+            channel.QueueBind(normalQueue, normalExchange, normalKey);
+
+            //声明死信
+            channel.ExchangeDeclare(deadExchange, type: "direct", durable: true);
+            channel.QueueDeclare(deadQueue, durable: true, false, false, null);
+            channel.QueueBind(deadQueue, deadExchange, deadKey);
+
+            var consumer = new EventingBasicConsumer(channel);
+            consumer.Received += (m, e) =>
+            {
+                string content = Encoding.UTF8.GetString(e.Body.ToArray());
+                Console.WriteLine(content);
+
+                channel.BasicAck(e.DeliveryTag, false);
+            };
+
+            //消费正常队列消息
+            //channel.BasicConsume(normalQueue, false, consumer);
+
+            //消费死信队列消息
+            channel.BasicConsume(deadQueue, false, consumer);
+        }
+    }
+}
+```
+
+##### 8.2.2.队列达到最大长度(队列满了，无法再添加数据到mq中)
+
+> ​	案例：抢票
+
+生产者：arg.Add("x-max-length", 10);//最大容量
+
+```c#
+using rabbitMq.Common;
+using RabbitMQ.Client;
+using System.Text;
+
+namespace rabbitMq.Provider.Dead
+{
+    public class SendDead
+    {
+        public static void SendMessage()
+        {
+            var connection = RabbitMqClient.GetConnection();
+            var channel = connection.CreateModel();
+
+            //正常交换机、正常队列、正常路由
+            string normalExchange = "normalExchange";
+            string normalQueue = "normalQueue";
+            string normalKey = "normalKey";
+            //死信交换机、死信队列、死信路由
+            string deadExchange = "deadExchange";
+            string deadQueue = "deadQueue";
+            string deadKey = "deadKey";
+
+            //声明正常
+            channel.ExchangeDeclare(normalExchange, type: "direct", durable: true);
+            Dictionary<string, object> arg = new Dictionary<string, object>();
+            arg.Add("x-dead-letter-exchange", deadExchange);//死信交换机
+            arg.Add("x-dead-letter-routing-key", deadKey);//死信路由
+            arg.Add("x-max-length", 10);//最大容量
+            channel.QueueDeclare(normalQueue, durable: true, false, false, arg);
+            channel.QueueBind(normalQueue, normalExchange, normalKey);
+
+            //声明死信
+            channel.ExchangeDeclare(deadExchange, type: "direct", durable: true);
+            channel.QueueDeclare(deadQueue, durable: true, false, false, null);
+            channel.QueueBind(deadQueue, deadExchange, deadKey);
+
+            //向正常队列发送消息
+            var prop = channel.CreateBasicProperties();
+            prop.Expiration = "10000"; //过期事件 毫秒 10s过期
+            int i = 0;
+            while (i < 15)
+            {
+                string content = $"死信消息，第{i}条消息";
+                byte[] body = Encoding.UTF8.GetBytes(content);
+
+                channel.BasicPublish(normalExchange, normalKey, prop, body);
+
+                i++;
+            }
+        }
+    }
+}
+```
+
+##### 8.2.3.消息被拒绝(basic.reject或 basic.nack)并且requeue=false(不放回队列)
+
+> ​	消费者出现异常，拒收该消息
+>
+> ​	channel.BasicReject(e.DeliveryTag,requeue: false);
+
+消费者：
+
+```c#
+using rabbitMq.Common;
+using RabbitMQ.Client;
+using RabbitMQ.Client.Events;
+using System.Text;
+
+namespace rabbitMq.Consumer.Dead
+{
+    public class ReceiveDead
+    {
+        public static void ReceiveMessage()
+        {
+            var connection = RabbitMqClient.GetConnection();
+            var channel = connection.CreateModel();
+
+            //正常交换机、正常队列、正常路由
+            string normalExchange = "normalExchange";
+            string normalQueue = "normalQueue";
+            string normalKey = "normalKey";
+            //死信交换机、死信队列、死信路由
+            string deadExchange = "deadExchange";
+            string deadQueue = "deadQueue";
+            string deadKey = "deadKey";
+
+            //声明正常
+            channel.ExchangeDeclare(normalExchange, type: "direct", durable: true);
+            Dictionary<string, object> arg = new Dictionary<string, object>();
+            arg.Add("x-dead-letter-exchange", deadExchange);//死信交换机
+            arg.Add("x-dead-letter-routing-key", deadKey);//死信路由
+            arg.Add("x-max-length", 10);//最大容量
+            channel.QueueDeclare(normalQueue, durable: true, false, false, arg);
+            channel.QueueBind(normalQueue, normalExchange, normalKey);
+
+            //声明死信
+            channel.ExchangeDeclare(deadExchange, type: "direct", durable: true);
+            channel.QueueDeclare(deadQueue, durable: true, false, false, null);
+            channel.QueueBind(deadQueue, deadExchange, deadKey);
+
+            var consumer = new EventingBasicConsumer(channel);
+            consumer.Received += (m, e) =>
+            {
+                string content = Encoding.UTF8.GetString(e.Body.ToArray());
+                Console.WriteLine(content);
+
+                //拒收，requeue: false 不返回原来的队列
+                channel.BasicReject(e.DeliveryTag,requeue: false);
+            };
+
+            //消费正常队列消息
+            channel.BasicConsume(normalQueue, false, consumer);
+        }
+    }
+}
+
+```
+
+### 9.延时队列
+
+> ​	[延迟队列](https://so.csdn.net/so/search?q=延迟队列&spm=1001.2101.3001.7020)存储的对象是对应的延迟消息，所谓“延迟消息”是指当消息被发送以后，并不想让消费者立刻拿到消息，而是等待特定时间后，消费者才能拿到这个消息进行消费。
+
+#### 9.1.应用场景
+
+1、订单处理：在电商网站中，订单处理是一个常见的业务流程。如果订单需要立即处理，可以使用RabbitMQ的延时队列来实现延迟处理。例如，可以将订单发送到一个延时队列中，并设置一个延迟时间(例如30分钟),然后在延迟时间到达后，将订单从队列中取出并进行处理。
+
+2、消息推送：在移动应用或Web应用程序中，可以使用RabbitMQ的延时队列来实现消息推送。例如，可以将用户订阅的消息发送到一个延时队列中，并设置一个延迟时间(例如1小时),然后在延迟时间到达后，将消息从队列中取出并推送给用户。
+
+3、定时任务：在分布式系统中，可以使用RabbitMQ的延时队列来实现定时任务。例如，可以将需要定期执行的任务发送到一个延时队列中，并设置一个延迟时间(例如每天),然后在延迟时间到达后，将任务从队列中取出并执行。
+
+4、数据备份：在数据库中，可以使用RabbitMQ的延时队列来实现数据备份。例如，可以将需要备份的数据发送到一个延时队列中，并设置一个延迟时间(例如每天),然后在延迟时间到达后，将数据从队列中取出并进行备份。
+
+5、优惠券发放：您可以设置一个延时队列，将优惠券发放任务添加到队列中，设置一定的延时时间，以保证优惠券在特定时间后才能被消费。
+
+#### 9.2.安装rabbitmq延时插件
+
+1. 将插件文件复制到linux系统中
+
+2. 将插件文件复制到docker容器
+
+   ```sh
+   docker cp rabbitmq_delayed_message_exchange-3.13.0.ez d16d6c5d7780:/opt/rabbitmq/plugins/rabbitmq_delayed_message_exchange-3.13.0.ez
+   ```
+
+3. 进入rabbitMq容器内部：docker exec -it rabbitmq bash
+
+4. 启用插件：rabbitmq-plugins enable rabbitmq_delayed_message_exchange
+
+#### 9.3.代码实现延迟队列
+
+> ​	原理：消息不会马上进入到队列里面来，而是保存到交换机里，等过了延迟时间，消息就会发送到消息队列里面去。消费者就会消费队列里的消息
+
+生产者：
+
+```c#
+using rabbitMq.Common;
+using RabbitMQ.Client;
+using System.Text;
+
+namespace rabbitMq.Provider.Delay
+{
+    public class SendDelay
+    {
+        public static void SendMessage()
+        {
+            var connection = RabbitMqClient.GetConnection();
+            var channel = connection.CreateModel();
+
+            channel.ExchangeDeclare(
+                exchange: "delayExchange",
+                type: "x-delayed-message",
+                durable: true,
+                autoDelete: false, 
+                arguments: new Dictionary<string, object>
+                {
+                    {"x-delayed","direct" }
+                });
+
+            channel.QueueDeclare("delayQueue", true, false, false, null);
+
+            channel.QueueBind("delayQueue", "delayExchange", "delayKey");
+
+            var prop = channel.CreateBasicProperties();
+            prop.Headers = new Dictionary<string, object>
+            {
+                {"x-delay","15000" } //延时15s
+            };
+            string content = "这是一个延时30s的消息";
+            byte[] body = Encoding.UTF8.GetBytes(content);
+
+            channel.BasicPublish("delayExchange", "delayKey", prop, body);
+        }
+    }
+}
+```
+
+### 10.集群
+
+> ​	解决高并发，达到高可用
+
+![image-20240628132352083](README.assets/image-20240628132352083.png)
 
 
 

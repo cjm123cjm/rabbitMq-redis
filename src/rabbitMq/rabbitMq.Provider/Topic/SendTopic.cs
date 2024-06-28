@@ -15,16 +15,19 @@ namespace rabbitMq.Provider.Topic
                 using (var channel = connection.CreateModel())
                 {
                     //定义交换机
-                    channel.ExchangeDeclare("topicExchange", "topic");
+                    channel.ExchangeDeclare("topicExchange", type: "topic", durable: true);
 
                     //定义队列
-                    channel.QueueDeclare("topicqueue1", false, false, false, null);
-                    channel.QueueDeclare("topicqueue2", false, false, false, null);
+                    channel.QueueDeclare("topicqueue1", durable: true, false, false, null);
+                    channel.QueueDeclare("topicqueue2", durable: true, false, false, null);
 
                     //将队列绑定到交换机上
                     channel.QueueBind("topicqueue1", "topicExchange", "Routingkey.*");
                     channel.QueueBind("topicqueue2", "topicExchange", "Routingkey.#");
 
+
+                    var prop = channel.CreateBasicProperties();
+                    prop.Persistent = true; //消息持久化
                     int i = 0;
                     while (i < 10)
                     {
@@ -32,7 +35,7 @@ namespace rabbitMq.Provider.Topic
                         byte[] body = Encoding.UTF8.GetBytes(content);
 
                         //发送消息，向路由key为Routingkey3的队列发消息
-                        channel.BasicPublish(exchange: "topicExchange", routingKey: "Routingkey.abc", null, body);
+                        channel.BasicPublish(exchange: "topicExchange", routingKey: "Routingkey.abc", prop, body);
 
                         Console.WriteLine($"第{i}条数据发送完毕");
                         i++;

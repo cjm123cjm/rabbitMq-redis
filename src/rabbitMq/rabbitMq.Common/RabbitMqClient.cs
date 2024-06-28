@@ -10,8 +10,8 @@ namespace rabbitMq.Common
             {
                 HostName = "192.168.159.129",
                 Port = 5672,
-                UserName = "admin",
-                Password = "admin",
+                UserName = "guest",
+                Password = "guest",
                 VirtualHost = "/"
             };
             return factory.CreateConnection();
