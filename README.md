@@ -1128,6 +1128,21 @@ namespace rabbitMq.Provider.Delay
 
 ![image-20240628132352083](README.assets/image-20240628132352083.png)
 
+#### 10.1.Linux安装RabbitMq
+
+开三个虚拟机
+
+- 192.168.159.129  rabbit1
+- 192.168.159.130 rabbit2
+- 192.168.159.131 rabbit3
+
+##### 10.1.1.设置机器别名hostname和修改hosts文件
+
+1. hostnamectl set-hostname 机器别名 --static
+2. vi /etc/hosts
+
+
+
 
 
 ## 二、redis
